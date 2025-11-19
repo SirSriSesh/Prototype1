@@ -1,0 +1,1461 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Party Order Prototype (Local)</title>
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@100..900&display=swap');
+        body {
+          font-family: 'Inter', sans-serif;
+        }
+        .line-clamp-3 {
+            display: -webkit-box;
+            -webkit-line-clamp: 3;
+            -webkit-box-orient: vertical;
+            overflow: hidden;
+        }
+        /* Sticky element for cart */
+        .sticky-cart {
+            position: sticky;
+            top: 6rem; /* Adjust based on header height */
+        }
+        /* Custom map styling - Highly simplified for local reliability */
+        .map-container {
+            position: relative;
+            width: 100%;
+            height: 450px;
+            /* Simple background representation of the Northeast region */
+            background: linear-gradient(180deg, #dbeafe 0%, #93c5fd 100%); /* Light blue gradient */
+            border-radius: 0.75rem;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+            overflow: hidden; /* Ensure pins stay inside */
+        }
+        .city-pin {
+            position: absolute;
+            width: 18px; /* Slightly larger for easier clicking */
+            height: 18px;
+            background-color: #ef4444; /* Red pin */
+            border: 3px solid #fff; /* Thicker border */
+            border-radius: 50%;
+            cursor: pointer;
+            box-shadow: 0 0 8px rgba(0, 0, 0, 0.6); /* More prominent shadow */
+            transition: transform 0.1s, z-index 0s;
+            z-index: 10;
+        }
+        .city-pin:hover {
+            transform: scale(1.6);
+            z-index: 20;
+        }
+        .city-label {
+            position: absolute;
+            white-space: nowrap;
+            font-size: 0.75rem;
+            font-weight: 600;
+            color: #1f2937; /* Dark text */
+            pointer-events: none; /* Allows click to pass through to the pin */
+            transform: translate(12px, -50%);
+            padding: 2px 4px;
+            background-color: rgba(255, 255, 255, 0.8);
+            border-radius: 4px;
+        }
+    </style>
+</head>
+<body class="bg-gray-50">
+
+    <header class="bg-white shadow-md sticky top-0 z-10">
+        <div id="header-content" class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4 flex justify-between items-center">
+            <!-- Header content will be rendered here -->
+        </div>
+    </header>
+
+    <main id="app-root" class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 min-h-[70vh]">
+        <!-- Application content will be rendered here -->
+    </main>
+
+    <footer class="py-4 text-center text-sm text-gray-500 border-t mt-8">
+        Powered by Local Storage (No Internet Connection Required).
+    </footer>
+
+    <script>
+        // --- Application State and Data Management (Local Storage) ---
+
+        const SAMPLE_CUSTOMER_ID = 'TEST_CUSTOMER_42'; // <-- FIXED ID for reliable testing
+        let userId = SAMPLE_CUSTOMER_ID; // Initial user is the sample customer
+
+        let state = {
+            role: null,
+            restaurants: [],
+            selectedRestaurant: null,
+            cart: [],
+            customerView: 'RESTAURANT_LIST',
+            selectedMetroArea: "New York City, NY",
+            myRestaurant: null,
+            ownerView: 'MANAGER',
+            orders: [], // Local orders storage
+            ownerOrders: [], // Orders specific to the owner
+        };
+
+        let checkoutForm = {
+            address: '',
+            deliveryDate: new Date().toISOString().split('T')[0],
+            deliveryTime: '18:00', // Default evening time
+            notes: ''
+        };
+
+        const METRO_AREAS = [
+            "New York City, NY", "Boston, MA", "Philadelphia, PA", "Washington, DC",
+            "Baltimore, MD", "Richmond, VA", "Cary, NC", "Charlotte, NC",
+            "Newark, NJ", "Edison, NJ"
+        ];
+
+        const RESTAURANTS_KEY = 'party_order_restaurants';
+        const ORDERS_KEY = 'party_order_orders';
+        const OWNER_PREFIX = 'SEED_OWNER_';
+
+        // Map coordinates for Northeast cities (normalized to 0-1000 for a 450px container)
+        // Adjusting coordinates slightly for better visual placement within the new gradient map
+        const CITY_COORDINATES = {
+            "Boston, MA": { top: '15%', left: '80%' },
+            "New York City, NY": { top: '30%', left: '70%' },
+            "Newark, NJ": { top: '35%', left: '65%' },
+            "Edison, NJ": { top: '40%', left: '60%' },
+            "Philadelphia, PA": { top: '45%', left: '55%' },
+            "Baltimore, MD": { top: '58%', left: '40%' },
+            "Washington, DC": { top: '65%', left: '35%' },
+            "Richmond, VA": { top: '80%', left: '30%' },
+            "Cary, NC": { top: '90%', left: '25%' },
+            "Charlotte, NC": { top: '95%', left: '15%' }
+        };
+
+        // --- NEW ORDER STATUSES ---
+        const ORDER_STATUSES = {
+            SUBMITTED: 'Submitted to Restaurant',
+            CHANGE_REQUESTED: 'Change Requested by Restaurant',
+            CONFIRMED: 'Confirmed by Restaurant',
+            PAYMENT_RECEIVED: 'Payment Received / Ready for Preparation',
+            PREPARING: 'Preparing',
+            READY_FOR_PICKUP: 'Ready for Pickup'
+        };
+
+        // --- Data Persistence Helpers ---
+        const saveStateToLocalStorage = () => {
+            localStorage.setItem(RESTAURANTS_KEY, JSON.stringify(state.restaurants));
+            localStorage.setItem(ORDERS_KEY, JSON.stringify(state.orders));
+        };
+
+        const loadStateFromLocalStorage = () => {
+            const storedRestaurants = localStorage.getItem(RESTAURANTS_KEY);
+            const storedOrders = localStorage.getItem(ORDERS_KEY);
+
+            if (storedRestaurants) {
+                state.restaurants = JSON.parse(storedRestaurants);
+            }
+            if (storedOrders) {
+                state.orders = JSON.parse(storedOrders);
+            }
+            // Update owner-specific data after loading all data
+            if (state.role === 'owner') {
+                state.myRestaurant = state.restaurants.find(r => r.ownerId === userId);
+                state.ownerOrders = state.orders.filter(o => o.restaurantId === userId);
+            }
+        };
+
+        const updateDataAndRerender = (delay = 0) => {
+            saveStateToLocalStorage();
+            setTimeout(() => {
+                loadStateFromLocalStorage();
+                renderApp();
+            }, delay);
+        };
+
+        // --- IMAGE PLACEHOLDER HELPER ---
+
+        const getPlaceholderUrl = (itemName, section) => {
+            // Clean item name for the placeholder text (remove bulk details)
+            let text = encodeURIComponent(itemName.split('(')[0].trim());
+            let color = 'ffffff';
+            let bgColor = '4f46e5'; // Default indigo
+
+            if (section === 'Appetizer') {
+                bgColor = 'f59e0b'; // Amber (food warmth)
+                color = '000000';
+            } else if (section === 'Main Course') {
+                bgColor = 'b91c1c'; // Red (meat/entree)
+                color = 'ffffff';
+            } else if (section === 'Desserts') {
+                bgColor = 'ec4899'; // Pink (sweet/dessert)
+                color = 'ffffff';
+            }
+
+            // Using 120x80 size for a thumbnail image
+            return `https://placehold.co/120x80/${bgColor}/${color}?text=${text}`;
+        };
+
+        // --- Sample Data Generators (Reused from previous version) ---
+
+        const generateGenericMenu = () => [
+            {
+                section: 'Appetizer',
+                items: [
+                    { id: crypto.randomUUID(), name: 'Truffle Fries (1/2 Tray)', price: 45.00, description: 'Crispy fries tossed in truffle oil and Parmesan.' },
+                    { id: crypto.randomUUID(), name: 'Truffle Fries (Full Tray)', price: 70.00, description: 'Crispy fries tossed in truffle oil and Parmesan.' },
+                    { id: crypto.randomUUID(), name: 'Calamari (1/2 Tray)', price: 65.00, description: 'Lightly fried squid with marinara sauce.' },
+                    { id: crypto.randomUUID(), name: 'Calamari (Full Tray)', price: 95.00, description: 'Lightly fried squid with marinara sauce.' },
+                    { id: crypto.randomUUID(), name: 'Soup of the Day (1/2 Gallon)', price: 35.00, description: 'Chef\'s daily creation, always fresh.' },
+                    { id: crypto.randomUUID(), name: 'Soup of the Day (Full Gallon)', price: 60.00, description: 'Chef\'s daily creation, always fresh.' },
+                    { id: crypto.randomUUID(), name: 'Bruschetta (1/2 Tray)', price: 50.00, description: 'Toasted bread topped with fresh tomatoes and basil.' },
+                    { id: crypto.randomUUID(), name: 'Bruschetta (Full Tray)', price: 80.00, description: 'Toasted bread topped with fresh tomatoes and basil.' },
+                    { id: crypto.randomUUID(), name: 'Spring Rolls (1/2 Tray)', price: 40.00, description: 'Vegetable spring rolls with sweet chili dip.' },
+                    { id: crypto.randomUUID(), name: 'Spring Rolls (Full Tray)', price: 65.00, description: 'Vegetable spring rolls with sweet chili dip.' }
+                ]
+            },
+            {
+                section: 'Main Course',
+                items: [
+                    { id: crypto.randomUUID(), name: 'Seared Salmon (1/2 Tray - serves 4-6)', price: 120.00, description: 'Served with roasted asparagus and lemon butter sauce.' },
+                    { id: crypto.randomUUID(), name: 'Seared Salmon (Full Tray - serves 8-10)', price: 190.00, description: 'Served with roasted asparagus and lemon butter sauce.' },
+                    { id: crypto.randomUUID(), name: 'Ribeye Steak (1/2 Tray - Sliced)', price: 150.00, description: '12oz Ribeye, mashed potatoes, and garlic green beans.' },
+                    { id: crypto.randomUUID(), name: 'Ribeye Steak (Full Tray - Sliced)', price: 250.00, description: '12oz Ribeye, mashed potatoes, and garlic green beans.' },
+                    { id: crypto.randomUUID(), name: 'Vegetarian Lasagna (1/2 Tray)', price: 90.00, description: 'Layers of pasta, ricotta, and seasonal vegetables.' },
+                    { id: crypto.randomUUID(), name: 'Vegetarian Lasagna (Full Tray)', price: 150.00, description: 'Layers of pasta, ricotta, and seasonal vegetables.' },
+                    { id: crypto.randomUUID(), name: 'Chicken Curry (1/2 Tray)', price: 95.00, description: 'Spicy Thai curry with jasmine rice.' },
+                    { id: crypto.randomUUID(), name: 'Chicken Curry (Full Tray)', price: 160.00, description: 'Spicy Thai curry with jasmine rice.' },
+                    { id: crypto.randomUUID(), name: 'Smoked Brisket Sandwich Kit (1/2 Tray)', price: 80.00, description: 'Slow-smoked brisket on a brioche bun.' },
+                    { id: crypto.randomUUID(), name: 'Smoked Brisket Sandwich Kit (Full Tray)', price: 130.00, description: 'Slow-smoked brisket on a brioche bun.' }
+                ]
+            },
+            {
+                section: 'Desserts',
+                items: [
+                    { id: crypto.randomUUID(), name: 'Chocolate Lava Cake (1/2 Dozen)', price: 45.00, description: 'Warm cake with a molten chocolate center.' },
+                    { id: crypto.randomUUID(), name: 'Chocolate Lava Cake (Full Dozen)', price: 70.00, description: 'Warm cake with a molten chocolate center.' },
+                    { id: crypto.randomUUID(), name: 'Cheesecake (1/2 Cake)', price: 40.00, description: 'New York style cheesecake with berry topping.' },
+                    { id: crypto.randomUUID(), name: 'Cheesecake (Full Cake)', price: 65.00, description: 'New York style cheesecake with berry topping.' },
+                    { id: crypto.randomUUID(), name: 'Tiramisu (1/2 Tray)', price: 40.00, description: 'Classic Italian coffee-flavored dessert.' },
+                    { id: crypto.randomUUID(), name: 'Tiramisu (Full Tray)', price: 65.00, description: 'Classic Italian coffee-flavored dessert.' }
+                ]
+            }
+        ];
+        const generateIndianMenu = () => [
+            {
+                section: 'Appetizer',
+                items: [
+                    { id: crypto.randomUUID(), name: 'Vegetable Samosas (20 pieces)', price: 30.00, description: 'Crispy pastry pockets filled with spiced potatoes and peas.' },
+                    { id: crypto.randomUUID(), name: 'Vegetable Samosas (40 pieces)', price: 55.00, description: 'Crispy pastry pockets filled with spiced potatoes and peas.' },
+                    { id: crypto.randomUUID(), name: 'Onion Bhaji (20 pieces)', price: 25.00, description: 'Deep-fried onion fritters in a gram flour batter.' },
+                    { id: crypto.randomUUID(), name: 'Onion Bhaji (40 pieces)', price: 45.00, description: 'Deep-fried onion fritters in a gram flour batter.' },
+                    { id: crypto.randomUUID(), name: 'Paneer Tikka (1/2 Tray)', price: 60.00, description: 'Grilled cheese cubes marinated in yogurt and spices.' },
+                    { id: crypto.randomUUID(), name: 'Paneer Tikka (Full Tray)', price: 100.00, description: 'Grilled cheese cubes marinated in yogurt and spices.' },
+                    { id: crypto.randomUUID(), name: 'Pakora Platter (1/2 Tray)', price: 50.00, description: 'Assortment of mixed vegetable fritters.' },
+                    { id: crypto.randomUUID(), name: 'Pakora Platter (Full Tray)', price: 85.00, description: 'Assortment of mixed vegetable fritters.' }
+                ]
+            },
+            {
+                section: 'Main Course',
+                items: [
+                    { id: crypto.randomUUID(), name: 'Chicken Tikka Masala (1/2 Tray)', price: 85.00, description: 'Chicken pieces in a creamy tomato sauce. Served with rice.' },
+                    { id: crypto.randomUUID(), name: 'Chicken Tikka Masala (Full Tray)', price: 140.00, description: 'Chicken pieces in a creamy tomato sauce. Served with rice.' },
+                    { id: crypto.randomUUID(), name: 'Lamb Rogan Josh (1/2 Tray)', price: 100.00, description: 'Aromatic Kashmiri curry with tender lamb. Served with rice.' },
+                    { id: crypto.randomUUID(), name: 'Lamb Rogan Josh (Full Tray)', price: 170.00, description: 'Aromatic Kashmiri curry with tender lamb. Served with rice.' },
+                    { id: crypto.randomUUID(), name: 'Palak Paneer (1/2 Tray)', price: 75.00, description: 'Spinach and cottage cheese cooked in a rich, mild gravy.' },
+                    { id: crypto.randomUUID(), name: 'Palak Paneer (Full Tray)', price: 125.00, description: 'Spinach and cottage cheese cooked in a rich, mild gravy.' },
+                    { id: crypto.randomUUID(), name: 'Dal Makhani (1/2 Tray)', price: 65.00, description: 'Slow-cooked black lentils and kidney beans in cream and butter.' },
+                    { id: crypto.randomUUID(), name: 'Dal Makhani (Full Tray)', price: 110.00, description: 'Slow-cooked black lentils and kidney beans in cream and butter.' }
+                ]
+            },
+            {
+                section: 'Desserts',
+                items: [
+                    { id: crypto.randomUUID(), name: 'Gulab Jamun (15 pieces)', price: 30.00, description: 'Deep-fried milk solids soaked in rose-flavored sugar syrup.' },
+                    { id: crypto.randomUUID(), name: 'Gulab Jamun (30 pieces)', price: 50.00, description: 'Deep-fried milk solids soaked in rose-flavored sugar syrup.' },
+                    { id: crypto.randomUUID(), name: 'Kheer (Rice Pudding) (1/2 Gallon)', price: 35.00, description: 'Traditional creamy rice pudding flavored with cardamom and nuts.' },
+                    { id: crypto.randomUUID(), name: 'Kheer (Rice Pudding) (Full Gallon)', price: 60.00, description: 'Traditional creamy rice pudding flavored with cardamom and nuts.' }
+                ]
+            }
+        ];
+
+        const INITIAL_RESTAURANT_DATA = [
+            // --- New York City, NY ---
+            { id: OWNER_PREFIX + '1', ownerId: OWNER_PREFIX + '1', name: 'The Global Bistro', description: 'Modern fusion cuisine specializing in large-scale party and corporate catering.', metroArea: METRO_AREAS[0], menu: generateGenericMenu(), deliveryAvailability: 'Mon - Fri: 10:00 AM - 8:00 PM | Requires 24hr notice.' },
+            { id: OWNER_PREFIX + '2', ownerId: OWNER_PREFIX + '2', name: 'Curry Delight', description: 'Authentic flavors of North India, specializing in catering trays for parties.', metroArea: METRO_AREAS[0], menu: generateIndianMenu(), deliveryAvailability: 'Open Daily 11:30 AM - 10:00 PM.' },
+            { id: OWNER_PREFIX + '3', ownerId: OWNER_PREFIX + '3', name: 'NYC Pizza Joint', description: 'Authentic coal-fired pizza and large format appetizers for events.', metroArea: METRO_AREAS[0], menu: generateGenericMenu(), deliveryAvailability: 'Mon - Sun: 9:00 AM - 11:00 PM.' },
+
+            // --- Boston, MA ---
+            { id: OWNER_PREFIX + '4', ownerId: OWNER_PREFIX + '4', name: 'Boston Seafood House', description: 'The freshest catch from the Atlantic, offering seafood platters and raw bars.', metroArea: METRO_AREAS[1], menu: generateGenericMenu(), deliveryAvailability: 'Mon - Sat: 10:00 AM - 7:00 PM.' },
+            { id: OWNER_PREFIX + '5', ownerId: OWNER_PREFIX + '5', name: 'Spicy Tandoor', description: 'Known for its fiery vindaloo and home-style chicken curry, available in bulk.', metroArea: METRO_AREAS[1], menu: generateIndianMenu(), deliveryAvailability: 'Wed - Sun: 1:00 PM - 9:30 PM.' },
+            { id: OWNER_PREFIX + '6', ownerId: OWNER_PREFIX + '6', name: 'Boston Sushi Bar', description: 'Fresh sushi, sashimi, and large specialty maki platters.', metroArea: METRO_AREAS[1], menu: generateGenericMenu(), deliveryAvailability: 'Daily 11:00 AM - 8:00 PM.' },
+
+            // --- Philadelphia, PA ---
+            { id: OWNER_PREFIX + '7', ownerId: OWNER_PREFIX + '7', name: 'Philly Hoagie Shop', description: 'Classic Philly sandwiches, hoagies, and sides in large format.', metroArea: METRO_AREAS[2], menu: generateGenericMenu(), deliveryAvailability: 'Tues - Fri: 8:00 AM - 4:00 PM.' },
+            { id: OWNER_PREFIX + '8', ownerId: OWNER_PREFIX + '8', name: 'Taj Mahal Kitchen', description: 'A quiet place for traditional biryani and comforting korma, perfect for events.', metroArea: METRO_AREAS[2], menu: generateIndianMenu(), deliveryAvailability: 'Sat - Sun: 12:00 PM - 8:00 PM.' },
+
+            // --- Washington, DC ---
+            { id: OWNER_PREFIX + '9', ownerId: OWNER_PREFIX + '9', name: 'The Capitol Grill', description: 'Steaks, upscale cocktails, and American classics for large group gatherings.', metroArea: METRO_AREAS[3], menu: generateGenericMenu(), deliveryAvailability: 'Weekdays 7 AM - 5 PM.' },
+            { id: OWNER_PREFIX + '10', ownerId: OWNER_PREFIX + '10', name: 'Masala Zone DC', description: 'Modern Indian street food and full-course regional specialties by the tray.', metroArea: METRO_AREAS[3], menu: generateIndianMenu(), deliveryAvailability: 'Open 10:00 AM - 10:00 PM.' },
+
+            // --- Baltimore, MD ---
+            { id: OWNER_PREFIX + '11', ownerId: OWNER_PREFIX + '11', name: 'Baltimore Crab Shack', description: 'Famous for steamed crabs, Old Bay seasoning, and large seafood platters.', metroArea: METRO_AREAS[4], menu: generateGenericMenu(), deliveryAvailability: 'Requires 48hr advance notice.' },
+            { id: OWNER_PREFIX + '12', ownerId: OWNER_PREFIX + '12', name: 'Indian Spice Hub', description: 'Fresh naan and perfectly spiced tikkas delivered hot for parties.', metroArea: METRO_AREAS[4], menu: generateIndianMenu(), deliveryAvailability: '11:00 AM - 9:00 PM, closed Mondays.' },
+
+            // --- Richmond, VA ---
+            { id: OWNER_PREFIX + '13', ownerId: OWNER_PREFIX + '13', name: 'Taste of India RVA', description: 'Richmond\'s favorite spot for classic Indian cuisine and lunch buffets (bulk).', metroArea: METRO_AREAS[5], menu: generateIndianMenu(), deliveryAvailability: '11:00 AM - 9:00 PM, closed Mondays.' },
+            { id: OWNER_PREFIX + '14', ownerId: OWNER_PREFIX + '14', name: 'RVA Comfort Food', description: 'Southern comfort dishes reimagined for large-scale event take-out.', metroArea: METRO_AREAS[5], menu: generateGenericMenu(), deliveryAvailability: '11:00 AM - 9:00 PM, closed Mondays.' },
+            { id: OWNER_PREFIX + '15', ownerId: OWNER_PREFIX + '15', name: 'Richmond Biryani', description: 'Specializing in Hyderabadi and Lucknowi Biryanis for events.', metroArea: METRO_AREAS[5], menu: generateIndianMenu(), deliveryAvailability: '11:00 AM - 9:00 PM, closed Mondays.' },
+
+            // --- Cary, NC ---
+            { id: OWNER_PREFIX + '16', ownerId: OWNER_PREFIX + '16', name: 'Cary Curry House', description: 'Contemporary Indian food with a focus on catering to large groups.', metroArea: METRO_AREAS[6], menu: generateIndianMenu(), deliveryAvailability: '11:00 AM - 9:00 PM, closed Mondays.' },
+            { id: OWNER_PREFIX + '17', ownerId: OWNER_PREFIX + '17', name: 'The Triangle Grill', description: 'Gourmet burgers and craft beers, packaged for large party consumption.', metroArea: METRO_AREAS[6], menu: generateGenericMenu(), deliveryAvailability: '11:00 AM - 9:00 PM, closed Mondays.' },
+
+            // --- Charlotte, NC ---
+            { id: OWNER_PREFIX + '18', ownerId: OWNER_PREFIX + '18', name: 'Charlotte Masala', description: 'Authentic South Indian dosas and delicious street food snacks available by tray.', metroArea: METRO_AREAS[7], menu: generateIndianMenu(), deliveryAvailability: '11:00 AM - 9:00 PM, closed Mondays.' },
+            { id: OWNER_PREFIX + '19', ownerId: OWNER_PREFIX + '19', name: 'Queen City Eats', description: 'Modern American dining with a focus on event food service.', metroArea: METRO_AREAS[7], menu: generateGenericMenu(), deliveryAvailability: '11:00 AM - 9:00 PM, closed Mondays.' },
+            { id: OWNER_PREFIX + '20', ownerId: OWNER_PREFIX + '20', name: 'Bombay Bazaar CLT', description: 'A cozy spot famous for its excellent Butter Chicken and Garlic Naan in party sizes.', metroArea: METRO_AREAS[7], menu: generateIndianMenu(), deliveryAvailability: '11:00 AM - 9:00 PM, closed Mondays.' },
+
+            // --- Newark, NJ (New Area - Index 8) ---
+            { id: OWNER_PREFIX + '21', ownerId: OWNER_PREFIX + '21', name: 'Newark Cuisine', description: 'Gourmet catering and event food service for the Newark area.', metroArea: METRO_AREAS[8], menu: generateGenericMenu(), deliveryAvailability: '11:00 AM - 9:00 PM, closed Mondays.' },
+            { id: OWNER_PREFIX + '22', ownerId: OWNER_PREFIX + '22', name: 'Spice Route NJ', description: 'Premier Indian catering specializing in Northern and Southern Indian party trays.', metroArea: METRO_AREAS[8], menu: generateIndianMenu(), deliveryAvailability: '11:00 AM - 9:00 PM, closed Mondays.' },
+            { id: OWNER_PREFIX + '23', ownerId: OWNER_PREFIX + '23', name: 'Ironbound Grill', description: 'Traditional Portuguese and American dishes for large parties.', metroArea: METRO_AREAS[8], menu: generateGenericMenu(), deliveryAvailability: '11:00 AM - 9:00 PM, closed Mondays.' },
+            { id: OWNER_PREFIX + '24', ownerId: OWNER_PREFIX + '24', name: 'Taste of Punjab', description: 'Famous for Tandoori items and robust Punjabi curries in party size.', metroArea: METRO_AREAS[8], menu: generateIndianMenu(), deliveryAvailability: '11:00 AM - 9:00 PM, closed Mondays.' },
+            { id: OWNER_PREFIX + '25', ownerId: OWNER_PREFIX + '25', name: 'Newark Deli', description: 'Large cold cut and salad platters perfect for business events.', metroArea: METRO_AREAS[8], menu: generateGenericMenu(), deliveryAvailability: '11:00 AM - 9:00 PM, closed Mondays.' },
+
+            // --- Edison, NJ (New Area - Index 9) ---
+            { id: OWNER_PREFIX + '26', ownerId: OWNER_PREFIX + '26', name: 'Edison Masala', description: 'South Indian specialties like Dosas and Idlis for large groups.', metroArea: METRO_AREAS[9], menu: generateIndianMenu(), deliveryAvailability: '11:00 AM - 9:00 PM, closed Mondays.' },
+            { id: OWNER_PREFIX + '27', ownerId: OWNER_PREFIX + '27', name: 'Jersey Shore BBQ', description: 'Slow-cooked BBQ ribs, pulled pork, and all the fixings by the pound.', metroArea: METRO_AREAS[9], menu: generateGenericMenu(), deliveryAvailability: '11:00 AM - 9:00 PM, closed Mondays.' },
+            { id: OWNER_PREFIX + '28', ownerId: OWNER_PREFIX + '28', name: 'Little India', description: 'A vast selection of regional Indian dishes, perfect for any celebration.', metroArea: METRO_AREAS[9], menu: generateIndianMenu(), deliveryAvailability: '11:00 AM - 9:00 PM, closed Mondays.' },
+            { id: OWNER_PREFIX + '29', ownerId: OWNER_PREFIX + '29', name: 'Metropark Deli', description: 'Sandwich wraps and gourmet sides for quick corporate lunch orders.', metroArea: METRO_AREAS[9], menu: generateGenericMenu(), deliveryAvailability: '11:00 AM - 9:00 PM, closed Mondays.' },
+            { id: OWNER_PREFIX + '30', ownerId: OWNER_PREFIX + '30', name: 'Tandoori Junction', description: 'Focused purely on fresh Naan, Kabobs, and Butter Chicken trays.', metroArea: METRO_AREAS[9], menu: generateIndianMenu(), deliveryAvailability: '11:00 AM - 9:00 PM, closed Mondays.' },
+        ];
+
+
+        const seedDatabase = () => {
+            let needsSave = false;
+
+            // 1. Set the fixed customer ID for testing
+            const customerId = SAMPLE_CUSTOMER_ID;
+
+            // 2. Load the existing customer ID from storage or set the fixed ID
+            if (!localStorage.getItem('current_customer_id')) {
+                localStorage.setItem('current_customer_id', customerId);
+            }
+            userId = localStorage.getItem('current_customer_id');
+
+
+            if (!localStorage.getItem(RESTAURANTS_KEY)) {
+                console.log("Seeding local storage with initial restaurant data...");
+                state.restaurants = INITIAL_RESTAURANT_DATA;
+                needsSave = true;
+            } else {
+                // Ensure state.restaurants is loaded if it's already there
+                const storedRestaurants = localStorage.getItem(RESTAURANTS_KEY);
+                if (storedRestaurants) {
+                     state.restaurants = JSON.parse(storedRestaurants);
+                }
+            }
+
+            // Seed orders only if the order key is empty.
+            if (!localStorage.getItem(ORDERS_KEY)) {
+                const ownerId1 = INITIAL_RESTAURANT_DATA[0].id; // The Global Bistro owner
+                const ownerId2 = INITIAL_RESTAURANT_DATA[1].id; // Curry Delight owner
+
+                state.orders = [
+                    // --- Sample Orders for Owner 1 (Owner dashboard will see these) ---
+
+                    // Order 1 (Owner 1): SUBMITTED (New, Awaiting Owner Confirmation)
+                    {
+                        id: 'order-owner1-a', customerId: 'another-customer-a', restaurantId: ownerId1,
+                        restaurantName: INITIAL_RESTAURANT_DATA[0].name,
+                        items: [{ id: 'b1', name: 'Seared Salmon (Full Tray - serves 8-10)', price: 190.00, quantity: 1 }],
+                        total: 190.00, status: ORDER_STATUSES.SUBMITTED,
+                        createdAt: new Date().toLocaleString(),
+                        deliveryAddress: '789 Fresh Ave, New York, NY', deliveryDate: new Date().toISOString().split('T')[0], deliveryTime: '12:00',
+                        notes: 'High priority corporate lunch order.'
+                    },
+                    // Order 2 (Owner 1): CHANGE_REQUESTED (Requires Customer Action)
+                    {
+                        id: 'order-owner1-b', customerId: 'another-customer-b', restaurantId: ownerId1,
+                        restaurantName: INITIAL_RESTAURANT_DATA[0].name,
+                        items: [{ id: 'a1', name: 'Truffle Fries (Full Tray)', price: 70.00, quantity: 2 }],
+                        total: 140.00, status: ORDER_STATUSES.CHANGE_REQUESTED,
+                        createdAt: new Date(Date.now() - 86400000).toLocaleString(),
+                        deliveryAddress: '123 Sample St, New York, NY', deliveryDate: new Date().toISOString().split('T')[0], deliveryTime: '19:00',
+                        notes: 'Restaurant needs to adjust delivery time to 7:30 PM due to kitchen capacity.'
+                    },
+                    // Order 3 (Owner 1): PAYMENT_RECEIVED (In Kitchen)
+                    {
+                        id: 'order-owner1-c', customerId: 'another-customer-c', restaurantId: ownerId1,
+                        restaurantName: INITIAL_RESTAURANT_DATA[0].name,
+                        items: [{ id: 'c1', name: 'Cheesecake (Full Cake)', price: 65.00, quantity: 2 }],
+                        total: 130.00, status: ORDER_STATUSES.PAYMENT_RECEIVED,
+                        createdAt: new Date(Date.now() - 3600000).toLocaleString(),
+                        deliveryAddress: '456 Party Blvd, New York, NY', deliveryDate: new Date().toISOString().split('T')[0], deliveryTime: '20:00',
+                        notes: 'Payment confirmed. Need to start dessert prep.'
+                    },
+                    // Order 4 (Owner 1): READY_FOR_PICKUP (Completed/Ready)
+                    {
+                        id: 'order-owner1-d', customerId: 'another-customer-d', restaurantId: ownerId1,
+                        restaurantName: INITIAL_RESTAURANT_DATA[0].name,
+                        items: [{ id: 'd1', name: 'Chicken Tikka Masala (Full Tray)', price: 140.00, quantity: 1 }],
+                        total: 140.00, status: ORDER_STATUSES.READY_FOR_PICKUP,
+                        createdAt: new Date(Date.now() - 7200000).toLocaleString(),
+                        deliveryAddress: '900 Pickup St, New York, NY', deliveryDate: new Date().toISOString().split('T')[0], deliveryTime: '18:30',
+                        notes: 'Order prepared and waiting for delivery driver.'
+                    },
+
+                    // --- Sample Order for CURRENT Customer (Customer dashboard will see this) ---
+                    // This order is specifically set to CONFIRMED status
+                    {
+                        id: 'order-customer-e', customerId: customerId, restaurantId: ownerId2,
+                        restaurantName: INITIAL_RESTAURANT_DATA[1].name,
+                        items: [{ id: 'e1', name: 'Lamb Rogan Josh (Full Tray)', price: 170.00, quantity: 1 }],
+                        total: 170.00, status: ORDER_STATUSES.CONFIRMED, // <-- CONFIRMED STATUS
+                        createdAt: new Date(Date.now() - 10000).toLocaleString(),
+                        deliveryAddress: 'My Home Address, NYC', deliveryDate: new Date().toISOString().split('T')[0], deliveryTime: '17:00',
+                        notes: 'Restaurant confirmed availability. Please proceed to payment.'
+                    }
+                ];
+                needsSave = true;
+            }
+
+            if (needsSave) {
+                saveStateToLocalStorage();
+            }
+        };
+
+        // --- Utility Components/Renderers ---
+
+        const LoadingSpinner = (text = "Loading...") => `
+            <div class="flex items-center justify-center p-6 text-indigo-600">
+                <svg class="animate-spin h-5 w-5 mr-3 border-4 border-t-transparent border-indigo-500 rounded-full" viewBox="0 0 24 24"></svg>
+                ${text}
+            </div>
+        `;
+
+        const UserCard = (userId) => `
+            <div class="p-3 bg-indigo-50 rounded-lg text-sm text-gray-700">
+                <span class="font-semibold text-indigo-700">User ID:</span> ${userId}
+            </div>
+        `;
+
+        const SectionTitle = (children) => `
+            <h2 class="text-2xl font-bold text-gray-800 mb-4 border-b pb-2">${children}</h2>
+        `;
+
+
+        // --- State Updaters and Re-renderers ---
+
+        const updateState = (newState) => {
+            Object.assign(state, newState);
+            renderApp();
+        };
+
+        const updateCart = (action) => {
+            let newCart = [...state.cart];
+            const { item, itemId, quantity } = action.payload || {};
+
+            switch (action.type) {
+                case 'ADD_ITEM': {
+                    const existingItem = newCart.find(i => i.id === item.id);
+                    if (existingItem) {
+                        newCart = newCart.map(i =>
+                            i.id === item.id ? { ...i, quantity: i.quantity + 1 } : i
+                        );
+                    } else {
+                        newCart = [...newCart, { ...item, quantity: 1 }];
+                    }
+                    break;
+                }
+                case 'UPDATE_QUANTITY': {
+                    newCart = newCart
+                        .map(i => (i.id === itemId ? { ...i, quantity: quantity } : i))
+                        .filter(i => i.quantity > 0);
+                    break;
+                }
+                case 'CLEAR_CART':
+                    newCart = [];
+                    break;
+            }
+            state.cart = newCart;
+            renderApp();
+        };
+
+        const setCustomerView = (view) => updateState({ customerView: view });
+        const setOwnerView = (view) => updateState({ ownerView: view });
+
+        const setRole = (newRole) => {
+            // Set a unique ID for the owner if they haven't claimed one, or use a new random ID for the customer
+            if (newRole === 'owner' && !localStorage.getItem('my_owner_id')) {
+                 // Claim the first seeded owner ID for demo purposes
+                const claimedOwnerId = INITIAL_RESTAURANT_DATA[0].id;
+                userId = claimedOwnerId;
+                localStorage.setItem('my_owner_id', userId);
+            } else if (newRole === 'owner') {
+                 userId = localStorage.getItem('my_owner_id');
+            } else {
+                // Ensure customer uses the fixed ID if they switch back
+                userId = SAMPLE_CUSTOMER_ID;
+            }
+
+            updateState({
+                role: newRole,
+                customerView: 'RESTAURANT_LIST',
+                ownerView: 'MANAGER'
+            });
+            updateDataAndRerender();
+        };
+
+
+        // --- Core Application Views ---
+
+        const renderHeader = () => {
+            const headerContent = document.getElementById('header-content');
+
+            let rolePill = state.role ? `<span class="px-3 py-1 text-sm font-semibold rounded-full capitalize ${
+                state.role === 'customer' ? 'bg-blue-100 text-blue-800' : 'bg-pink-100 text-pink-800'
+            }">${state.role} Mode</span>` : '';
+
+            let authInfo = userId ? UserCard(userId) : '';
+
+            let changeRoleButton = state.role ? `
+                <button onclick="window.setRole(null)" class="bg-gray-100 text-gray-700 hover:bg-gray-200 py-2 px-4 rounded-lg text-sm font-medium transition">
+                    Change Role
+                </button>
+            ` : '';
+
+            headerContent.innerHTML = `
+                <div class="flex items-center space-x-4">
+                    <h1 class="text-3xl font-extrabold text-indigo-600 tracking-tight">
+                        Party Order Prototype (Local)
+                    </h1>
+                    ${rolePill}
+                </div>
+                <div class="flex items-center space-x-3">
+                    ${authInfo}
+                    ${changeRoleButton}
+                </div>
+            `;
+        };
+
+        const renderRoleSelection = () => {
+            return `
+                <div class="flex flex-col items-center justify-center min-h-[50vh] bg-white p-8 rounded-xl shadow-2xl">
+                    <h1 class="text-3xl font-bold text-gray-800 mb-8">Welcome to the Party Order System!</h1>
+                    <p class="text-gray-600 mb-6 text-center">Please select your role to proceed:</p>
+                    <div class="flex space-x-6">
+                        <button onclick="window.setRole('customer')"
+                            class="bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-4 px-8 rounded-xl shadow-lg transition duration-300 transform hover:scale-105"
+                        >
+                            I am a Customer
+                        </button>
+                        <button onclick="window.setRole('owner')"
+                            class="bg-green-600 hover:bg-green-700 text-white font-bold py-4 px-8 rounded-xl shadow-lg transition duration-300 transform hover:scale-105"
+                        >
+                        I am a Restaurant Owner
+                        </button>
+                    </div>
+                    <p class="mt-4 text-sm text-gray-500 italic">Note: Data is saved only in your browser (Local Storage).</p>
+                </div>
+            `;
+        };
+
+        // --- CUSTOMER ACTIONS ---
+
+        const handleCustomerAcknowledgeChange = (orderId) => {
+            const index = state.orders.findIndex(o => o.id === orderId);
+            if (index > -1) {
+                // Acknowledging the change transitions it to Confirmed (ready for payment)
+                state.orders[index].status = ORDER_STATUSES.CONFIRMED;
+                state.orders[index].notes = 'Customer acknowledged and approved changes.';
+                updateDataAndRerender(0);
+            }
+        };
+        window.handleCustomerAcknowledgeChange = handleCustomerAcknowledgeChange;
+
+        const handleCustomerConfirmPayment = (orderId) => {
+            const index = state.orders.findIndex(o => o.id === orderId);
+            if (index > -1) {
+                // Simulating payment processing by setting status to a final preparation state
+                state.orders[index].status = ORDER_STATUSES.PAYMENT_RECEIVED;
+                state.orders[index].notes = state.orders[index].notes.replace('Restaurant confirmed availability. Please proceed to payment.', 'Payment received.').trim();
+                updateDataAndRerender(0);
+            }
+        };
+        window.handleCustomerConfirmPayment = handleCustomerConfirmPayment;
+
+        // --- CUSTOMER VIEWS ---
+
+        // Start Checkout Function
+        const startCheckout = () => {
+            if (!state.cart.length) return;
+            // Reset form for fresh entry, keeping date/time defaults
+            checkoutForm.address = '';
+            checkoutForm.notes = '';
+            updateState({ customerView: 'CHECKOUT' });
+        };
+        window.startCheckout = startCheckout;
+
+
+        const renderCartSidebar = () => {
+            const cartTotal = state.cart.reduce((sum, item) => sum + (item.price * item.quantity), 0);
+            const cartHtml = state.cart.length === 0 ?
+                '<p class="text-gray-500 italic">Your cart is empty. Add items from the menu!</p>' :
+                state.cart.map(item => `
+                    <div class="flex justify-between items-center bg-gray-50 p-3 rounded-lg mb-2">
+                        <div class="flex-1">
+                            <p class="font-semibold text-gray-800">${item.name}</p>
+                            <p class="text-xs text-gray-500">$${item.price.toFixed(2)} x ${item.quantity}</p>
+                        </div>
+                        <div class="flex space-x-1">
+                            <button onclick="window.updateCart({ type: 'UPDATE_QUANTITY', payload: { itemId: '${item.id}', quantity: ${item.quantity - 1} } })"
+                                class="p-1 w-7 h-7 bg-indigo-100 text-indigo-700 rounded-full hover:bg-indigo-200 transition"
+                                aria-label="Decrease quantity"
+                            >-</button>
+                            <span class="p-1 w-7 h-7 text-center font-bold text-gray-700">${item.quantity}</span>
+                            <button onclick="window.updateCart({ type: 'UPDATE_QUANTITY', payload: { itemId: '${item.id}', quantity: ${item.quantity + 1} } })"
+                                class="p-1 w-7 h-7 bg-indigo-100 text-indigo-700 rounded-full hover:bg-indigo-200 transition"
+                                aria-label="Increase quantity"
+                            >+</button>
+                        </div>
+                    </div>
+                `).join('');
+
+            return `
+                <div class="lg:col-span-1 bg-white p-6 rounded-xl shadow-lg h-fit sticky-cart border border-indigo-200">
+                    <h3 class="text-xl font-bold text-indigo-800 mb-4">Your Party Order (${state.cart.length} items)</h3>
+                    <div id="cart-message-box" class="mb-4"></div>
+
+                    <div class="space-y-3">
+                        ${cartHtml}
+
+                        ${state.cart.length > 0 ? `
+                        <div class="pt-4 border-t border-gray-200 mt-4">
+                            <div class="flex justify-between font-bold text-2xl text-indigo-700">
+                                <span>Total:</span>
+                                <span>$${cartTotal.toFixed(2)}</span>
+                            </div>
+                        </div>
+
+                        <button onclick="window.startCheckout()"
+                            ${state.cart.length === 0 ? 'disabled' : ''}
+                            class="w-full bg-green-500 hover:bg-green-600 text-white font-bold py-3 rounded-lg transition duration-200 disabled:opacity-50 mt-4"
+                        >
+                            Proceed to Checkout
+                        </button>
+                        <button onclick="window.updateCart({ type: 'CLEAR_CART' })"
+                            class="w-full border border-gray-300 text-gray-700 hover:bg-gray-100 py-2 rounded-lg transition duration-200 mt-2"
+                        >
+                            Clear Cart
+                        </button>
+                        ` : ''}
+                    </div>
+                </div>
+            `;
+        };
+        window.updateCart = updateCart; // Expose for inline onclick
+
+        const renderCustomerMenu = () => {
+            const restaurant = state.selectedRestaurant;
+            if (!restaurant) return `<div>Error: No restaurant selected.</div>`;
+
+            const menuHtml = restaurant.menu?.length > 0 ? (
+                restaurant.menu.map(section => `
+                    <div class="mb-8">
+                        <h3 class="text-2xl font-semibold text-gray-800 mb-4 bg-indigo-50 p-3 rounded-lg border-l-4 border-indigo-500">${section.section}</h3>
+                        <div class="space-y-4">
+                            ${section.items.map(item => `
+                                <div class="flex items-center justify-between bg-white p-4 rounded-xl shadow-md transition duration-300 hover:shadow-lg">
+                                    <div class="flex items-center flex-1 min-w-0">
+                                        <img src="${getPlaceholderUrl(item.name, section.section)}" alt="${item.name}" class="w-20 h-20 object-cover rounded-lg mr-4 shadow">
+                                        <div class="min-w-0 flex-1">
+                                            <h3 class="text-lg font-bold text-gray-800 truncate">${item.name}</h3>
+                                            <p class="text-sm text-gray-500 line-clamp-1">${item.description}</p>
+                                            <p class="text-xl font-semibold text-indigo-600 mt-1">$${item.price.toFixed(2)}</p>
+                                        </div>
+                                    </div>
+                                    <button onclick="window.updateCart({ type: 'ADD_ITEM', payload: { item: ${JSON.stringify(item).replace(/"/g, '&quot;')} } })"
+                                        class="ml-4 flex-shrink-0 bg-green-500 hover:bg-green-600 text-white font-bold py-2 px-4 rounded-lg transition duration-200 flex items-center space-x-1"
+                                    >
+                                        <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor"><path d="M3 1a1 1 0 000 2h1a2 2 0 012 2v2a2 2 0 002 2h2a2 2 0 002-2V5a2 2 0 012-2h1a1 1 0 100-2H3zM9 14a1 1 0 011-1h1a1 1 0 110 2h-1a1 1 0 01-1-1zM5.5 14a1 1 0 011 1v1a1 1 0 11-2 0v-1a1 1 0 011-1z" /><path fill-rule="evenodd" d="M16 7a1 1 0 00-1 1v7a3 3 0 01-3 3H7a3 3 0 01-3-3V8a1 1 0 00-1-1v10a5 5 0 005 5h5a5 5 0 005-5V8a1 1 0 00-1-1z" clip-rule="evenodd" /></svg>
+                                        <span>Add</span>
+                                    </button>
+                                </div>
+                            `).join('')}
+                        </div>
+                    </div>
+                `).join('')
+            ) : `
+                <div class="p-6 text-center text-gray-500 bg-white rounded-lg shadow-inner">
+                    This restaurant has not set up its menu yet.
+                </div>
+            `;
+
+            return `
+                <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
+                    <div class="lg:col-span-2 space-y-6">
+                        <button onclick="window.setCustomerView('RESTAURANT_LIST'); window.updateCart({ type: 'CLEAR_CART' })"
+                            class="text-indigo-600 hover:text-indigo-800 font-semibold flex items-center space-x-1 mb-4"
+                        >
+                            <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18" /></svg>
+                            <span>Back to Restaurants</span>
+                        </button>
+                        ${SectionTitle(`${restaurant.name} Menu`)}
+                        <p class="text-gray-600 mb-6">${restaurant.description}</p>
+                        ${restaurant.deliveryAvailability ? `<p class="text-sm font-semibold text-yellow-700 mb-4 bg-yellow-50 p-3 rounded-lg">Delivery Notes: ${restaurant.deliveryAvailability}</p>` : ''}
+                        ${menuHtml}
+                    </div>
+                    ${renderCartSidebar()}
+                </div>
+            `;
+        };
+
+        const renderCustomerCheckout = () => {
+            const restaurant = state.selectedRestaurant;
+            const cartTotal = state.cart.reduce((sum, item) => sum + (item.price * item.quantity), 0);
+            const today = new Date().toISOString().split('T')[0];
+
+            const summaryHtml = state.cart.map(item => `
+                <div class="flex justify-between items-center py-2 border-b border-gray-100">
+                    <span class="text-gray-700">${item.quantity}x ${item.name}</span>
+                    <span class="font-semibold text-gray-800">$${(item.price * item.quantity).toFixed(2)}</span>
+                </div>
+            `).join('');
+
+            return `
+                <div class="space-y-6">
+                    <button onclick="window.setCustomerView('MENU')"
+                        class="text-indigo-600 hover:text-indigo-800 font-semibold flex items-center space-x-1 mb-4"
+                    >
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18" /></svg>
+                        <span>Back to Menu</span>
+                    </button>
+
+                    ${SectionTitle(`Checkout for ${restaurant.name}`)}
+
+                    <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
+                        <div class="lg:col-span-2 space-y-6">
+                            <!-- DELIVERY INFORMATION -->
+                            <div class="bg-white p-6 rounded-xl shadow-lg space-y-6 border-t-4 border-indigo-500">
+                                <h3 class="text-xl font-bold text-gray-800 border-b pb-2">Delivery Details</h3>
+
+                                <div>
+                                    <label class="block text-sm font-medium text-gray-700 mb-1">Delivery Address</label>
+                                    <textarea id="checkout-address" rows="3" oninput="window.handleCheckoutInput('address', this.value)"
+                                        class="mt-1 block w-full border border-gray-300 rounded-lg shadow-sm p-3 focus:ring-indigo-500 focus:border-indigo-500" placeholder="Street Address, City, State, Zip"
+                                    >${checkoutForm.address}</textarea>
+                                </div>
+
+                                <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                                    <div>
+                                        <label class="block text-sm font-medium text-gray-700 mb-1">Delivery Date</label>
+                                        <input type="date" id="checkout-date" min="${today}" value="${checkoutForm.deliveryDate || today}" onchange="window.handleCheckoutInput('deliveryDate', this.value)"
+                                            class="mt-1 block w-full border border-gray-300 rounded-lg shadow-sm p-3 focus:ring-indigo-500 focus:border-indigo-500 bg-white" required
+                                        />
+                                    </div>
+                                    <div>
+                                        <label class="block text-sm font-medium text-gray-700 mb-1">Delivery Time</label>
+                                        <input type="time" id="checkout-time" value="${checkoutForm.deliveryTime}" onchange="window.handleCheckoutInput('deliveryTime', this.value)"
+                                            class="mt-1 block w-full border border-gray-300 rounded-lg shadow-sm p-3 focus:ring-indigo-500 focus:border-indigo-500 bg-white" required
+                                        />
+                                    </div>
+                                </div>
+
+                                <div>
+                                    <label class="block text-sm font-medium text-gray-700 mb-1">Additional Notes (e.g., parking, drop-off instructions)</label>
+                                    <textarea id="checkout-notes" rows="3" oninput="window.handleCheckoutInput('notes', this.value)"
+                                        class="mt-1 block w-full border border-gray-300 rounded-lg shadow-sm p-3 focus:ring-indigo-500 focus:border-indigo-500" placeholder="Please leave order on porch. Call upon arrival."
+                                    >${checkoutForm.notes}</textarea>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="lg:col-span-1 bg-white p-6 rounded-xl shadow-lg h-fit sticky-cart border border-green-200">
+                            <h3 class="text-xl font-bold text-green-700 mb-4 border-b pb-2">Order Summary</h3>
+
+                            <div class="space-y-1 mb-4">
+                                ${summaryHtml}
+                            </div>
+
+                            <div class="pt-4 border-t border-gray-200 mt-4">
+                                <div class="flex justify-between font-bold text-2xl text-indigo-700">
+                                    <span>Total:</span>
+                                    <span>$${cartTotal.toFixed(2)}</span>
+                                </div>
+                            </div>
+                            <div id="final-checkout-message" class="mt-4 text-center text-sm font-medium text-red-500"></div>
+
+                            <button onclick="window.handleFinalOrderPlacement()"
+                                class="w-full bg-green-600 hover:bg-green-700 text-white font-bold py-3 rounded-lg transition duration-200 mt-4"
+                            >
+                                Confirm & Place Order ($${cartTotal.toFixed(2)})
+                            </button>
+
+                            <button onclick="window.setCustomerView('MENU')"
+                                class="w-full border border-gray-300 text-gray-700 hover:bg-gray-100 py-2 rounded-lg transition duration-200 mt-2"
+                            >
+                                Cancel / Edit Menu
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            `;
+        };
+        window.handleCheckoutInput = (field, value) => {
+            checkoutForm[field] = value;
+        };
+
+        const handleFinalOrderPlacement = () => {
+            const msgBox = document.getElementById('final-checkout-message');
+
+            // Simple validation
+            if (!checkoutForm.address.trim()) {
+                msgBox.textContent = 'Please enter a delivery address.';
+                return;
+            }
+            if (!checkoutForm.deliveryDate || !checkoutForm.deliveryTime) {
+                msgBox.textContent = 'Please select a delivery date and time.';
+                return;
+            }
+
+            msgBox.textContent = ''; // Clear previous errors
+
+            const cartTotal = state.cart.reduce((sum, item) => sum + (item.price * item.quantity), 0);
+
+            const orderData = {
+                id: 'order-' + crypto.randomUUID().substring(0, 8),
+                customerId: userId,
+                restaurantId: state.selectedRestaurant.id,
+                restaurantName: state.selectedRestaurant.name,
+                items: state.cart.map(item => ({
+                    id: item.id,
+                    name: item.name,
+                    price: item.price,
+                    quantity: item.quantity
+                })),
+                total: cartTotal,
+                status: ORDER_STATUSES.SUBMITTED, // Set initial status to Submitted
+                createdAt: new Date().toLocaleString(),
+                // New checkout data
+                deliveryAddress: checkoutForm.address.trim(),
+                deliveryDate: checkoutForm.deliveryDate,
+                deliveryTime: checkoutForm.deliveryTime,
+                notes: checkoutForm.notes.trim()
+            };
+
+            // Save order locally
+            state.orders.push(orderData);
+
+            // Clear cart and reset view
+            state.cart = [];
+            // Keep date/time in form for user convenience if they place another order later
+            checkoutForm.address = '';
+            checkoutForm.notes = '';
+
+            // Transition to My Orders view
+            updateState({ customerView: 'MY_ORDERS' });
+            updateDataAndRerender();
+        };
+        window.handleFinalOrderPlacement = handleFinalOrderPlacement;
+
+
+        const renderCustomerRestaurantList = () => {
+            const filteredRestaurants = state.restaurants
+                .filter(r => r.metroArea === state.selectedMetroArea)
+                .slice(0, 10);
+
+            const restaurantListHtml = filteredRestaurants.length > 0 ? (
+                filteredRestaurants.map(restaurant => `
+                    <div class="bg-white rounded-xl shadow-lg overflow-hidden border border-indigo-100 transition duration-300 hover:shadow-xl hover:scale-[1.02]">
+                        <div class="p-6">
+                            <p class="text-sm font-medium text-indigo-500 mb-1">${restaurant.metroArea}</p>
+                            <h3 class="text-2xl font-bold text-gray-800 mb-2">${restaurant.name}</h3>
+                            <p class="text-gray-600 text-sm mb-4 line-clamp-3">${restaurant.description || 'No description provided.'}</p>
+                            <p class="text-xs text-gray-500 mb-4 border-t pt-2">${restaurant.deliveryAvailability || 'No delivery notes set.'}</p>
+                            <button onclick="window.handleSelectRestaurant('${restaurant.id}')"
+                                class="w-full bg-indigo-500 hover:bg-indigo-600 text-white font-bold py-2 rounded-lg transition duration-200"
+                            >
+                                View Menu (${restaurant.menu?.reduce((sum, s) => sum + s.items.length, 0) || 0} items)
+                            </button>
+                        </div>
+                    </div>
+                `).join('')
+            ) : `
+                <div class="md:col-span-3 p-8 text-center text-gray-500 bg-white rounded-xl shadow-lg">
+                    No restaurants are currently available in **${state.selectedMetroArea}**.
+                </div>
+            `;
+
+            const metroOptions = METRO_AREAS.map(area =>
+                `<option value="${area}" ${area === state.selectedMetroArea ? 'selected' : ''}>${area}</option>`
+            ).join('');
+
+            // NEW MAP RENDERER
+            const mapPins = Object.entries(CITY_COORDINATES).map(([area, coords]) => `
+                <div class="city-pin" style="top: ${coords.top}; left: ${coords.left};"
+                    data-area="${area}"
+                    onclick="window.handleMapClick('${area}')"
+                    title="Select ${area}"
+                ></div>
+                 <div class="city-label" style="top: ${coords.top}; left: ${coords.left};">
+                    ${area.split(',')[0]}
+                 </div>
+            `).join('');
+
+            return `
+                <div class="space-y-6">
+                    <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center">
+                        ${SectionTitle('1. Choose Your Service Area')}
+                        <button onclick="window.setCustomerView('MY_ORDERS')"
+                            class="bg-indigo-100 text-indigo-700 hover:bg-indigo-200 font-semibold py-2 px-4 rounded-lg transition duration-200 mt-2 sm:mt-0"
+                        >
+                            View My Orders
+                        </button>
+                    </div>
+
+                    <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                        <!-- Map Selection -->
+                        <div class="lg:col-span-2 bg-white p-4 rounded-xl shadow-md map-container relative">
+                            <h3 class="text-xl font-bold text-gray-800 mb-4">Select City on Map</h3>
+                            <!-- Simplified Map Visual - Pins and Labels -->
+                            ${mapPins}
+                            <div class="absolute bottom-4 left-4 p-2 bg-indigo-50 rounded-lg text-sm font-semibold">
+                                Selected Area: <span class="text-indigo-600">${state.selectedMetroArea}</span>
+                            </div>
+                        </div>
+
+                        <!-- Dropdown Selection -->
+                        <div class="lg:col-span-1 bg-white p-4 rounded-xl shadow-md">
+                            <label for="metro-area" class="block text-lg font-medium text-gray-700 mb-2">
+                                Or Choose from List:
+                            </label>
+                            <select id="metro-area" onchange="window.handleMetroAreaChange(this.value)"
+                                class="w-full border border-gray-300 rounded-lg p-3 text-lg focus:ring-indigo-500 focus:border-indigo-500 bg-white"
+                            >
+                                ${metroOptions}
+                            </select>
+                        </div>
+                    </div>
+
+                    ${SectionTitle(`2. Available Restaurants in ${state.selectedMetroArea}`)}
+                    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                        ${restaurantListHtml}
+                    </div>
+                </div>
+            `;
+        };
+
+        window.handleMetroAreaChange = (area) => updateState({ selectedMetroArea: area });
+        window.handleMapClick = (area) => {
+            updateState({ selectedMetroArea: area });
+        };
+        window.handleSelectRestaurant = (id) => {
+            const restaurant = state.restaurants.find(r => r.id === id);
+            updateState({ selectedRestaurant: restaurant, customerView: 'MENU' });
+        };
+
+        const renderCustomerMyOrders = () => {
+            // Filter orders relevant to the current local user
+            const myOrders = state.orders
+                .filter(o => o.customerId === userId)
+                .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+
+            if (myOrders.length === 0) return `<div class="p-6 text-center text-gray-500">You haven't placed any orders yet.</div>`;
+
+            const ordersHtml = myOrders.map(order => {
+                let statusClass;
+                let actionButtons = '';
+
+                switch(order.status) {
+                    case ORDER_STATUSES.SUBMITTED:
+                        statusClass = 'bg-blue-100 text-blue-800';
+                        break;
+                    case ORDER_STATUSES.CHANGE_REQUESTED:
+                        statusClass = 'bg-red-100 text-red-800 animate-pulse';
+                        actionButtons = `
+                            <p class="text-sm font-semibold text-red-600 mt-4">Restaurant needs your action:</p>
+                            <p class="text-sm text-gray-600 mb-4 italic">${order.notes || 'Details needed from the restaurant.'}</p>
+                            <div class="flex space-x-2">
+                                <button onclick="window.handleCustomerAcknowledgeChange('${order.id}')"
+                                    class="flex-1 bg-indigo-500 hover:bg-indigo-600 text-white font-bold py-2 px-4 rounded-lg transition"
+                                >
+                                    Acknowledge & Confirm Changes
+                                </button>
+                            </div>
+                        `;
+                        break;
+                    case ORDER_STATUSES.CONFIRMED:
+                        statusClass = 'bg-yellow-100 text-yellow-800';
+                         actionButtons = `
+                            <p class="text-sm font-semibold text-green-600 mt-4">Order Confirmed! Please complete payment:</p>
+                            <div class="flex space-x-2">
+                                <button onclick="window.handleCustomerConfirmPayment('${order.id}')"
+                                    class="flex-1 bg-green-500 hover:bg-green-600 text-white font-bold py-2 px-4 rounded-lg transition"
+                                >
+                                    Confirm & Make Payment ($${order.total.toFixed(2)})
+                                </button>
+                            </div>
+                        `;
+                        break;
+                    case ORDER_STATUSES.PAYMENT_RECEIVED:
+                    case ORDER_STATUSES.PREPARING:
+                        statusClass = 'bg-purple-100 text-purple-800';
+                        break;
+                    case ORDER_STATUSES.READY_FOR_PICKUP:
+                        statusClass = 'bg-green-100 text-green-800';
+                        break;
+                    default:
+                        statusClass = 'bg-gray-100 text-gray-800';
+                }
+
+                const itemsList = order.items.map((item, index) =>
+                    `<li key="${index}">${item.quantity}x ${item.name} ($${item.price.toFixed(2)})</li>`
+                ).join('');
+
+                const deliveryInfo = order.deliveryDate ? `
+                    <div class="mt-4 pt-4 border-t border-gray-200 text-sm space-y-1">
+                        <p><span class="font-semibold text-indigo-700">Deliver By:</span> ${order.deliveryDate} at ${order.deliveryTime}</p>
+                        <p><span class="font-semibold text-indigo-700">Address:</span> ${order.deliveryAddress}</p>
+                        ${order.notes && order.status !== ORDER_STATUSES.CHANGE_REQUESTED ? `<p><span class="font-semibold text-indigo-700">Notes:</span> ${order.notes}</p>` : ''}
+                    </div>
+                ` : '';
+
+
+                return `
+                    <div class="bg-white p-6 rounded-xl shadow-lg border border-indigo-100">
+                        <div class="flex justify-between items-start mb-3 border-b pb-2">
+                            <div>
+                                <p class="font-bold text-lg text-indigo-800">${order.restaurantName}</p>
+                                <p class="text-sm text-gray-500">Order #${order.id.substring(0, 6)} | Placed: ${order.createdAt}</p>
+                            </div>
+                            <span class="px-3 py-1 text-sm font-semibold rounded-full ${statusClass}">
+                                ${order.status}
+                            </span>
+                        </div>
+                        <p class="text-sm font-semibold mb-2">Items:</p>
+                        <ul class="list-disc pl-5 text-gray-600 text-sm mb-4">
+                            ${itemsList}
+                        </ul>
+                        <p class="font-bold text-xl text-indigo-600">Total: $${order.total.toFixed(2)}</p>
+                        ${deliveryInfo}
+                        ${actionButtons}
+                    </div>
+                `;
+            }).join('');
+
+            return `
+                <div class="space-y-6">
+                    <button onclick="window.setCustomerView('RESTAURANT_LIST')"
+                        class="text-indigo-600 hover:text-indigo-800 font-semibold flex items-center space-x-1"
+                    >
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18" /></svg>
+                        <span>Back to Restaurants</span>
+                    </button>
+                    ${SectionTitle('My Past Party Orders')}
+                    <div class="space-y-4">
+                        ${ordersHtml}
+                    </div>
+                </div>
+            `;
+        };
+
+        // --- OWNER VIEWS ---
+
+        let ownerForm = {}; // Local state container for form inputs
+
+        const renderOwnerRestaurantManager = () => {
+            const myRestaurant = state.restaurants.find(r => r.id === userId);
+
+            // Initialize local form state if myRestaurant is loaded or if it's new
+            ownerForm.name = myRestaurant?.name || ownerForm.name || 'My New Restaurant';
+            ownerForm.description = myRestaurant?.description || ownerForm.description || 'Serving up the best food in town!';
+            ownerForm.metroArea = myRestaurant?.metroArea || ownerForm.metroArea || METRO_AREAS[0];
+            ownerForm.deliveryAvailability = myRestaurant?.deliveryAvailability || ownerForm.deliveryAvailability || 'Monday-Friday: 11:00 AM - 9:00 PM'; // NEW FIELD INIT
+            ownerForm.menu = myRestaurant?.menu || ownerForm.menu || generateGenericMenu();
+            ownerForm.id = myRestaurant?.id || userId;
+
+
+            const metroOptions = METRO_AREAS.map(area =>
+                `<option value="${area}" ${area === ownerForm.metroArea ? 'selected' : ''}>${area}</option>`
+            ).join('');
+
+            const menuSectionsHtml = ownerForm.menu.map(section => {
+                const itemsHtml = section.items.map(item => `
+                    <div class="p-4 border border-gray-200 rounded-lg shadow-sm grid grid-cols-1 md:grid-cols-5 gap-3">
+                        <div class="md:col-span-2">
+                            <label class="block text-xs font-medium text-gray-500">Item Name</label>
+                            <input type="text" value="${item.name}" oninput="window.handleOwnerMenuUpdate('${section.section}', '${item.id}', 'name', this.value)"
+                                class="mt-1 block w-full border border-gray-300 rounded-lg p-2 text-sm" placeholder="Pizza"
+                            />
+                        </div>
+                        <div class="md:col-span-1">
+                            <label class="block text-xs font-medium text-gray-500">Price ($)</label>
+                            <input type="number" step="0.01" min="0.01" value="${item.price}" oninput="window.handleOwnerMenuUpdate('${section.section}', '${item.id}', 'price', parseFloat(this.value) || 0.01)"
+                                class="mt-1 block w-full border border-gray-300 rounded-lg p-2 text-sm"
+                            />
+                        </div>
+                        <div class="md:col-span-1">
+                            <label class="block text-xs font-medium text-gray-500">Description</label>
+                            <input type="text" value="${item.description}" oninput="window.handleOwnerMenuUpdate('${section.section}', '${item.id}', 'description', this.value)"
+                                class="mt-1 block w-full border border-gray-300 rounded-lg p-2 text-sm" placeholder="Brief description"
+                            />
+                        </div>
+                        <div class="flex items-end justify-center">
+                            <button onclick="window.handleOwnerMenuDelete('${section.section}', '${item.id}')"
+                                class="bg-red-500 hover:bg-red-600 text-white p-2 rounded-lg transition duration-200 w-full"
+                                aria-label="Delete menu item"
+                            >
+                                <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 mx-auto" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
+                            </button>
+                        </div>
+                    </div>
+                `).join('');
+
+                return `
+                    <div class="bg-white p-6 rounded-xl shadow-lg space-y-4">
+                        <h3 class="text-xl font-bold text-indigo-700 border-b pb-2">${section.section}</h3>
+                        ${itemsHtml}
+                        <button onclick="window.handleOwnerMenuAdd('${section.section}')"
+                            class="w-full border-2 border-dashed border-indigo-300 text-indigo-600 hover:bg-indigo-50 py-3 rounded-lg transition duration-200 flex items-center justify-center space-x-2"
+                        >
+                            <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M10 5a1 1 0 011 1v3h3a1 1 0 110 2h-3v3a1 1 0 11-2 0v-3H6a1 1 0 110-2h3V6a1 1 0 011-1z" clip-rule="evenodd" /></svg>
+                            <span>Add New ${section.section} Item</span>
+                        </button>
+                    </div>
+                `;
+            }).join('');
+
+            return `
+                <div class="space-y-8" id="owner-manager-form">
+                    ${SectionTitle('Restaurant Profile Setup')}
+
+                    <div class="bg-white p-6 rounded-xl shadow-lg space-y-4 border-t-4 border-indigo-500">
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700">Restaurant Name</label>
+                            <input type="text" id="owner-name" value="${ownerForm.name}" oninput="window.handleOwnerInputChange('name', this.value)"
+                                class="mt-1 block w-full border border-gray-300 rounded-lg shadow-sm p-3 focus:ring-indigo-500 focus:border-indigo-500" placeholder="e.g., The Grill House"
+                            />
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700">Metropolitan Area</label>
+                            <select id="owner-area" onchange="window.handleOwnerInputChange('metroArea', this.value)"
+                                class="mt-1 block w-full border border-gray-300 rounded-lg shadow-sm p-3 focus:ring-indigo-500 focus:border-indigo-500 bg-white"
+                            >
+                                ${metroOptions}
+                            </select>
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700">Description</label>
+                            <textarea id="owner-description" rows="3" oninput="window.handleOwnerInputChange('description', this.value)"
+                                class="mt-1 block w-full border border-gray-300 rounded-lg shadow-sm p-3 focus:ring-indigo-500 focus:border-indigo-500" placeholder="Tell customers about your food and style."
+                            >${ownerForm.description}</textarea>
+                        </div>
+                    </div>
+
+                    <!-- NEW SCHEDULING SECTION -->
+                    <div class="bg-white p-6 rounded-xl shadow-lg space-y-4 border-t-4 border-yellow-500">
+                        <h3 class="text-xl font-bold text-gray-800 border-b pb-2">Delivery & Scheduling Availability</h3>
+                        <p class="text-sm text-gray-600">This information is shown to customers when they view your restaurant listing.</p>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700">Delivery Hours/Notes</label>
+                            <textarea id="owner-delivery" rows="3" oninput="window.handleOwnerInputChange('deliveryAvailability', this.value)"
+                                class="mt-1 block w-full border border-gray-300 rounded-lg shadow-sm p-3 focus:ring-yellow-500 focus:border-yellow-500" placeholder="e.g., Deliveries only M-F, 11 AM - 9 PM. Requires 24-hour notice."
+                            >${ownerForm.deliveryAvailability}</textarea>
+                        </div>
+                    </div>
+                    <!-- END NEW SCHEDULING SECTION -->
+
+                    ${SectionTitle('Menu Management')}
+
+                    ${menuSectionsHtml}
+
+                    <div id="owner-message-box" class="text-center"></div>
+
+                    <button onclick="window.handleSaveRestaurant()" id="owner-save-btn"
+                        class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3 px-4 rounded-lg transition duration-200 disabled:opacity-50 mt-4 flex items-center justify-center"
+                    >
+                        Save All Changes
+                    </button>
+                </div>
+            `;
+        };
+
+        window.handleOwnerInputChange = (field, value) => {
+            ownerForm[field] = value;
+        };
+
+        window.handleOwnerMenuUpdate = (sectionName, itemId, field, value) => {
+            ownerForm.menu = ownerForm.menu.map(section =>
+                section.section === sectionName
+                    ? {
+                        ...section,
+                        items: section.items.map(item =>
+                            item.id === itemId ? { ...item, [field]: value } : item
+                        )
+                      }
+                    : section
+            );
+            renderOwnerManagerContent();
+        };
+
+        window.handleOwnerMenuAdd = (sectionName) => {
+            ownerForm.menu = ownerForm.menu.map(section =>
+                section.section === sectionName
+                    ? { ...section, items: [...section.items, { id: crypto.randomUUID(), name: '', price: 0.01, description: '' }] }
+                    : section
+            );
+            renderOwnerManagerContent();
+        };
+
+        window.handleOwnerMenuDelete = (sectionName, itemId) => {
+            ownerForm.menu = ownerForm.menu.map(section =>
+                section.section === sectionName
+                    ? { ...section, items: section.items.filter(item => item.id !== itemId) }
+                    : section
+            );
+            renderOwnerManagerContent();
+        };
+
+        window.handleSaveRestaurant = () => {
+            const msgBox = document.getElementById('owner-message-box');
+            const saveBtn = document.getElementById('owner-save-btn');
+
+            if (!ownerForm.name.trim() || !ownerForm.metroArea) {
+                if (msgBox) msgBox.innerHTML = `<p class="text-red-500 text-sm">Restaurant name and metropolitan area are required.</p>`;
+                return;
+            }
+
+            if (saveBtn) {
+                saveBtn.disabled = true;
+                saveBtn.innerHTML = LoadingSpinner("Saving...");
+            }
+            if (msgBox) msgBox.innerHTML = '';
+
+            try {
+                const restaurantData = {
+                    id: userId,
+                    ownerId: userId,
+                    name: ownerForm.name.trim(),
+                    description: ownerForm.description.trim(),
+                    metroArea: ownerForm.metroArea,
+                    deliveryAvailability: ownerForm.deliveryAvailability.trim(), // SAVING NEW FIELD
+                    menu: ownerForm.menu,
+                    createdAt: new Date().toLocaleString()
+                };
+
+                // Update in local state
+                const existingIndex = state.restaurants.findIndex(r => r.id === userId);
+                if (existingIndex > -1) {
+                    state.restaurants[existingIndex] = restaurantData;
+                } else {
+                    state.restaurants.push(restaurantData);
+                }
+
+                if (msgBox) msgBox.innerHTML = `<p class="text-green-600 text-sm">Restaurant and Menu saved successfully!</p>`;
+
+                updateDataAndRerender(100);
+
+            } catch (error) {
+                console.error("Error saving restaurant:", error);
+                if (msgBox) msgBox.innerHTML = `<p class="text-red-500 text-sm">Error saving restaurant: ${error.message}</p>`;
+            } finally {
+                if (saveBtn) {
+                    saveBtn.disabled = false;
+                    saveBtn.innerHTML = 'Save All Changes';
+                }
+                setTimeout(() => { if (msgBox) msgBox.innerHTML = ''; }, 3000);
+            }
+        };
+
+        const renderOwnerManagerContent = () => {
+             const container = document.querySelector('#owner-manager-view');
+             if (container) container.innerHTML = renderOwnerRestaurantManager();
+        };
+
+        const renderOwnerOrderList = () => {
+            // Filter and sort orders specific to this owner
+            const ownerOrders = state.orders
+                .filter(o => o.restaurantId === userId)
+                .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+
+            if (ownerOrders.length === 0) return `<div class="p-6 text-center text-gray-500">No new orders at this time.</div>`;
+
+            const ordersHtml = ownerOrders.map(order => {
+                const statusClass = order.status === ORDER_STATUSES.SUBMITTED ? 'bg-blue-100 text-blue-800' :
+                                    order.status === ORDER_STATUSES.CHANGE_REQUESTED ? 'bg-red-100 text-red-800' :
+                                    order.status === ORDER_STATUSES.CONFIRMED ? 'bg-yellow-100 text-yellow-800' :
+                                    order.status === ORDER_STATUSES.PAYMENT_RECEIVED || order.status === ORDER_STATUSES.PREPARING ? 'bg-purple-100 text-purple-800' :
+                                    'bg-green-100 text-green-800';
+
+                const itemsList = order.items.map((item, index) =>
+                    `<li key="${index}">${item.quantity}x ${item.name} ($${item.price.toFixed(2)})</li>`
+                ).join('');
+
+                const deliveryInfo = order.deliveryDate ? `
+                    <div class="mt-4 pt-4 border-t border-gray-200 text-sm space-y-1">
+                        <p><span class="font-semibold text-indigo-700">Deliver By:</span> ${order.deliveryDate} at ${order.deliveryTime}</p>
+                        <p><span class="font-semibold text-indigo-700">Address:</span> ${order.deliveryAddress}</p>
+                        ${order.notes ? `<p><span class="font-semibold text-indigo-700">Notes:</span> ${order.notes}</p>` : ''}
+                    </div>
+                ` : '';
+
+                // New Status Control Buttons
+                const actionButtons = `
+                    <div class="mt-4 pt-4 border-t flex flex-wrap gap-2 text-sm">
+                        <span class="font-semibold text-gray-700 w-full mb-1">Update Status:</span>
+                        <button onclick="window.handleUpdateStatus('${order.id}', '${ORDER_STATUSES.CHANGE_REQUESTED}')"
+                            class="px-2 py-1 rounded-lg bg-red-100 text-red-700 hover:bg-red-200 transition ${order.status === ORDER_STATUSES.CHANGE_REQUESTED ? 'ring-2 ring-red-500' : ''}"
+                        >
+                            Change Requested
+                        </button>
+                        <button onclick="window.handleUpdateStatus('${order.id}', '${ORDER_STATUSES.CONFIRMED}')"
+                            class="px-2 py-1 rounded-lg bg-yellow-100 text-yellow-700 hover:bg-yellow-200 transition ${order.status === ORDER_STATUSES.CONFIRMED ? 'ring-2 ring-yellow-500' : ''}"
+                        >
+                            Confirm Order
+                        </button>
+                        <button onclick="window.handleUpdateStatus('${order.id}', '${ORDER_STATUSES.PREPARING}')"
+                            class="px-2 py-1 rounded-lg bg-purple-100 text-purple-700 hover:bg-purple-200 transition ${order.status === ORDER_STATUSES.PREPARING ? 'ring-2 ring-purple-500' : ''}"
+                        >
+                            Start Prep
+                        </button>
+                        <button onclick="window.handleUpdateStatus('${order.id}', '${ORDER_STATUSES.READY_FOR_PICKUP}')"
+                            class="px-2 py-1 rounded-lg bg-green-100 text-green-700 hover:bg-green-200 transition ${order.status === ORDER_STATUSES.READY_FOR_PICKUP ? 'ring-2 ring-green-500' : ''}"
+                        >
+                            Ready for Pickup
+                        </button>
+                    </div>
+                `;
+
+                return `
+                    <div class="bg-white p-6 rounded-xl shadow-lg border border-indigo-100">
+                        <div class="flex justify-between items-start mb-3 border-b pb-2">
+                            <div>
+                                <p class="font-bold text-lg text-indigo-800">Order #${order.id.substring(0, 6)}</p>
+                                <p class="text-sm text-gray-500">Placed: ${order.createdAt}</p>
+                            </div>
+                            <span class="px-3 py-1 text-sm font-semibold rounded-full ${statusClass}">
+                                ${order.status}
+                            </span>
+                        </div>
+                        <p class="text-sm font-semibold mb-2">Items:</p>
+                        <ul class="list-disc pl-5 text-gray-600 text-sm mb-4">
+                            ${itemsList}
+                        </ul>
+                        <p class="font-bold text-xl text-indigo-600">Total: $${order.total.toFixed(2)}</p>
+                        ${deliveryInfo}
+                        ${actionButtons}
+                    </div>
+                `;
+            }).join('');
+
+            return `
+                <div class="space-y-4">
+                    ${SectionTitle(`Incoming Orders (${ownerOrders.length})`)}
+                    ${ordersHtml}
+                </div>
+            `;
+        };
+
+        window.handleUpdateStatus = (orderId, newStatus) => {
+            const index = state.orders.findIndex(o => o.id === orderId);
+            if (index > -1) {
+                // If setting to CHANGE_REQUESTED, apply a sample note since we can't capture real input
+                if (newStatus === ORDER_STATUSES.CHANGE_REQUESTED) {
+                    state.orders[index].notes = 'Delivery time adjustment needed (30 minutes later). Please review and confirm.';
+                } else if (newStatus === ORDER_STATUSES.CONFIRMED && state.orders[index].status === ORDER_STATUSES.CHANGE_REQUESTED) {
+                    // If owner confirms after requesting a change, clear the change note
+                    state.orders[index].notes = '';
+                }
+
+                state.orders[index].status = newStatus;
+                updateDataAndRerender(0);
+            }
+        };
+
+
+        // --- MAIN RENDER LOOP ---
+
+        const renderApp = () => {
+            const root = document.getElementById('app-root');
+            renderHeader();
+
+            // Check if restaurants were loaded after seeding
+            if (state.restaurants.length === 0) {
+                 root.innerHTML = LoadingSpinner("Data is not yet loaded into Local Storage. Please ensure you have cleared local storage and reloaded the page.");
+                 return;
+            }
+
+
+            if (!state.role) {
+                root.innerHTML = renderRoleSelection();
+                return;
+            }
+
+            let contentHtml = '';
+
+            if (state.role === 'customer') {
+                switch (state.customerView) {
+                    case 'RESTAURANT_LIST':
+                        contentHtml = renderCustomerRestaurantList();
+                        break;
+                    case 'MENU':
+                        contentHtml = renderCustomerMenu();
+                        break;
+                    case 'CHECKOUT': // NEW CASE
+                        contentHtml = renderCustomerCheckout();
+                        break;
+                    case 'MY_ORDERS':
+                        contentHtml = renderCustomerMyOrders();
+                        break;
+                }
+            } else if (state.role === 'owner') {
+                let ownerContent = state.ownerView === 'MANAGER' ? renderOwnerRestaurantManager() : renderOwnerOrderList();
+
+                contentHtml = `
+                    <div class="flex flex-col lg:flex-row gap-6">
+                        <div class="lg:w-1/4 bg-white p-6 rounded-xl shadow-lg h-fit">
+                            <h3 class="text-xl font-bold text-gray-800 mb-4 border-b pb-2">Owner Dashboard</h3>
+                            <button onclick="window.setOwnerView('MANAGER')"
+                                class="w-full text-left p-3 rounded-lg font-medium mb-2 transition ${
+                                    state.ownerView === 'MANAGER' ? 'bg-indigo-500 text-white' : 'text-gray-700 hover:bg-gray-100'
+                                }"
+                            >
+                                🍽️ Restaurant & Menu Setup
+                            </button>
+                            <button onclick="window.setOwnerView('ORDER_LIST')"
+                                class="w-full text-left p-3 rounded-lg font-medium transition ${
+                                    state.ownerView === 'ORDER_LIST' ? 'bg-indigo-500 text-white' : 'text-gray-700 hover:bg-gray-100'
+                                }"
+                            >
+                                📦 View Incoming Orders
+                            </button>
+                        </div>
+                        <div class="lg:w-3/4" id="owner-manager-view">
+                            ${ownerContent}
+                        </div>
+                    </div>
+                `;
+            }
+
+            root.innerHTML = contentHtml;
+        };
+
+
+        // --- Initialization ---
+
+        window.onload = function() {
+            // 1. Ensure initial data is in local storage (if running for the first time)
+            seedDatabase();
+            // 2. Load the current state (including any newly seeded data)
+            loadStateFromLocalStorage();
+            // 3. Render the application based on the loaded state
+            renderApp();
+        };
+
+        // Expose global functions for inline HTML event handlers
+        window.setRole = setRole;
+        window.setCustomerView = setCustomerView;
+        window.setOwnerView = setOwnerView;
+    </script>
+</body>
+</html>
